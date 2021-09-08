@@ -2,5 +2,6 @@
 
 int main()
 {
-	WonSY::Concurrency::TestReplicationPtr();
+	// WonSY::Concurrency::TestReplicationPtr_ThreadId();
+	WonSY::Concurrency::TestReplicationPtr_ContextKey();
 }

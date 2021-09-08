@@ -11,7 +11,7 @@
 
 namespace WonSY::Concurrency
 {
-	void TestReplicationPtr()
+	void TestReplicationPtr_ThreadId()
 	{
 		using namespace std::chrono_literals;
 		using Cont = std::map< std::string, int >;
@@ -118,6 +118,64 @@ namespace WonSY::Concurrency
 			writeFailThread.join();
 
 			std::cout << "Finish!" << std::endl;
+		}
+	}
+
+	void TestReplicationPtr_ContextKey()
+	{
+		using namespace std::chrono_literals;
+		using Cont = std::map< std::string, int >;
+
+		// 기본적인 사용법
+		{
+			// create repPtr and Attached this thread;
+			WsyReplicationCKPtr< std::string > repPtr;
+			const auto contextKeyPtr = [ &repPtr ]() -> ContextKeyPtr
+				{
+					// 쓰레기 인터페이스 목숨걸고 스텝줄이기
+					if ( const auto retOptional = repPtr.Attach( []() { return new std::string( "123" ); } );
+						retOptional.has_value() )
+					{
+						return std::make_unique< ContextKey >( /* ( retOptional.value() ).get() */ );
+					}
+					else
+					{
+						return nullptr;
+					}
+				}();
+
+			// 이중 키 획득 실패
+			{
+				const auto contextKey2 = repPtr.Attach( []() { return new std::string( "123" ); } );
+				if ( contextKey2.has_value() )
+				{
+
+				}
+				else
+				{
+
+				}
+			}
+
+			// Set
+			{
+				// 람다의 비용, 복사 비용에 따라, 아래 두 함수 중 성능이 좋은 함수가 다르다. 
+				
+				// Master Data의 수정을 먼저 시도하고, 성공 시 Slave Data에도 동일하게 동작시킨다.
+				repPtr.Set( *( contextKeyPtr.get() ), []( auto& data ) { data = "ABC"; return true; } );
+
+				// Master Data에 복사 대입 후에, Slave Data에도 복사 생성한다.
+				repPtr.Set( *( contextKeyPtr.get() ), "ABC" );
+			}
+
+			// Get
+			{
+				// Master Context일 경우, 원본 데이터를 전달
+				repPtr.Get( *( contextKeyPtr.get() ) );
+
+				// 복사본을 전달합니다.
+				std::cout << repPtr.Get() << std::endl;
+			}
 		}
 	}
 }

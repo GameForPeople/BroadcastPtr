@@ -12,35 +12,149 @@
 #include <shared_mutex>
 
 #define NODISCARD [[nodiscard]]
+#define DEPRECATED_THREAD_ID true
 
 namespace WonSY::Concurrency
 {
-#pragma region [ Replication Ptr ]
-
-	// !0. 미완입니다.
-	// !1. 안정성이 보장되지 않습니다.
-
+#pragma region [ BroadcastPtr ]
 	// #0. 기존의 어떤 Context에서 Data에 직접 읽고 쓴 후, 이를 Lock을 한 후 Set하고, 다른 Context에서 읽을 때는 항상 Lock을 걸고 Copy하는 구조에 대하여, 하나의 클래스를 통한 인터페이스 제작을 목표로 함
 	// !0. 기본적으로 아래의 조건을 만족할 때의 사용을 제안한다. 
 	//	 - 0. Single Context Write( Master Context ) - Multi Context Read( Slave Context )
 	//	 - 1. Copy 비용이 적은 Type에서의 처리.
 	//	 - 2. Master Context에서의 Read Call이 많고, Write Call이 적으며, Read Context에서의 Access가 적을 때.
 
-	// SingleReadMultiWritePtr Ver 0.1 : threadId == context, thread가 고정되는 구조에서 사용할 수 있는 클래스 제작
-	// SingleReadMultiWritePtr Ver 0.2 : Context Key 용도의 클래스 제작
+	// BroadcastPtr Ver 0.1 : threadId == context, thread가 고정되는 구조에서 사용할 수 있는 클래스 제작
+	// BroadcastPtr Ver 0.2 : Context Key 용도의 클래스 제작
+	// BroadcastPtr Ver 0.3 : threadId를 통한 방식 Deprecated 처리. 오히려 더 프로그래머의 실수를 유발하기 쉬움.
+	// BroadcastPtr Ver 0.4 : 이름변경 SingleReadMultiWritePtr -> Replication -> BroadcastPtr
+	// BroadcastPtr Ver 0.5 : Sub ContextKey를 발급하지 않고, 템플릿으로 이미 생성된 Context Key를 통해 처리하도록 수정
 	
-#define DELETE_COPY_AND_MOVE( type )      \
-	type( const type& ) = delete;             \
-	type& operator=( const type& ) = delete;  \
-	type( type&& ) = delete;                  \
-	type& operator=( type&& ) = delete;       \
+	enum class SYNC_TYPE
+	{
+		COPY,      // = Master 데이터를 Slave로 복사
+		DOUBLING,  // = Master에 한 행동을 동일하게 Slave에 행함
+	};
 
-	struct ContextKey { /* temp :: template < class _Type > friend struct ReplicationPtr_ContextKey;  private */ public: explicit ContextKey() = default; DELETE_COPY_AND_MOVE(ContextKey) };
-	
-	using ContextKeyPtr = std::unique_ptr< ContextKey >;
+	template < class _ContextKeyType, class _DataType >
+	class BroadcastPtr
+	{
+#pragma region [ Def ]
+#pragma endregion
 
+#pragma region [ Public Func ]
+	public:
+		BroadcastPtr( const std::function< _DataType*() >& func /*= nullptr*/ )
+			: m_masterData( nullptr )
+			, m_slaveData ( nullptr )
+			, m_slaveLock (         )
+		{
+			if ( func )
+			{
+				m_masterData = func();
+				m_slaveData  = m_masterData ? new _DataType( *m_masterData ) : nullptr; // multi-thread safe?
+			}
+
+			// 분명히 성능적으로는 손해이지만, nullptr인 상태에서의 문제가 더 크다고 생각하기 때문에, 이 부분에서 기본 생성자를 호출하여 처리를 한다.
+			if ( !m_masterData )
+			{
+				m_masterData = new _DataType();
+				m_slaveData  = new _DataType();
+			}
+		}
+
+		~BroadcastPtr()
+		{
+			// unsafe
+			if ( m_masterData ) { delete m_masterData; }
+
+			std::lock_guard local( m_slaveLock );
+			if ( m_slaveData ) { delete m_slaveData; }
+		}
+
+		NODISCARD const _DataType& Get( const _ContextKeyType& )
+		{
+			return *m_masterData;
+		}
+
+		const _DataType Get()
+		{
+			std::shared_lock localLock( m_slaveLock );
+			
+			// copy!!
+			return m_slaveData ? *m_slaveData : _DataType();
+		};
+
+		void Set( const _ContextKeyType& contextKey, const _DataType& data )
+		{
+			*m_masterData = data;
+			_CopyMasterToSlave( contextKey );
+		}
+
+		bool Set( 
+			const _ContextKeyType&                                                    contextKey,
+			const std::function< bool/* = 마스터 데이터 변경 여부 */( _DataType& ) >& func,
+			const SYNC_TYPE                                                           syncType = SYNC_TYPE::DOUBLING )
+		{
+			if ( func( *m_masterData ) )
+			{
+				// MasterData가 변경되었을 때만, Lock을 잡고, SlaveData의 변경을 시도한다.
+				if ( syncType == SYNC_TYPE::COPY )
+				{
+					_CopyMasterToSlave( contextKey );
+					return true;
+				}
+				else if ( const bool slaveReplicateResult =
+					[ & ]
+					{
+						std::lock_guard local( m_slaveLock );
+						return func( *m_slaveData );
+					}(); !slaveReplicateResult )
+				{
+					// 슬레이브에 마스터 데이터와 동일한 함수를 실행했으나 실패할 경우, 강제로 카피해준다.
+					_CopyMasterToSlave( contextKey );
+				}
+
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+
+#pragma endregion
+
+#pragma region [ Private Func ]
+	private:
+		void _CopyMasterToSlave( const _ContextKeyType& )
+		{
+			_DataType* tempPtr = m_masterData ? new _DataType( *m_masterData ) : nullptr;
+			{
+				std::lock_guard local( m_slaveLock );
+				std::swap( m_slaveData, tempPtr );
+			}
+
+			if ( tempPtr )
+				delete tempPtr;
+		}
+
+#pragma endregion
+
+#pragma region [ Member Var ]
+	private:
+		_DataType*        m_masterData;
+
+		_DataType*        m_slaveData;
+		std::shared_mutex m_slaveLock;
+#pragma endregion
+
+	};
+
+	void TestBroadcastPtr();
+
+#if DEPRECATED_THREAD_ID != true
 	template < class _Type >
-	struct ReplicationPtr_ThreadId
+	 struct ReplicationPtr_ThreadId
 	{
 #pragma region [ Def ]
 
@@ -230,136 +344,15 @@ namespace WonSY::Concurrency
 	};
 
 	void TestReplicationPtr_ThreadId();
-
-	template < class _Type >
-	struct ReplicationPtr_ContextKey
-	{
-#pragma region [ Def ]
-
-		using _TypePtr = _Type*;
-		using _TypeRef = _Type&;
-		using _TypeConstPtr = _Type const*;
-		using _TypeConstRef = const _Type&;
-
-#pragma endregion
-#pragma region [ Public Func ]
-		ReplicationPtr_ContextKey()
-			: m_masterData( nullptr )
-			, m_slaveData( nullptr )
-			, m_slaveLock()
-		{
-		}
-
-		~ReplicationPtr_ContextKey()
-		{
-			// unsafe
-			if ( m_masterData ) { delete m_masterData; }
-
-			std::lock_guard local( m_slaveLock );
-			if ( m_slaveData ) { delete m_slaveData; }
-		}
-
-		NODISCARD std::optional< ContextKeyPtr > Attach( const std::function< _TypePtr() >& func )
-		{
-			// for NRVO
-			std::optional< ContextKeyPtr > retContextKey{};
-
-			if ( m_doOnceFlag.test_and_set() )
-			{
-				return retContextKey;//return std::nullopt;
-			}
-
-			retContextKey.emplace();
-
-			if ( func )
-			{
-				m_masterData = func();
-			}
-
-			_Sync( *( retContextKey.value().get() ) );
-
-			return retContextKey;
-		}
-
-		NODISCARD const _Type& Get( const ContextKey& )
-		{
-			return *m_masterData;
-		}
-
-		const _Type Get()
-		{
-			std::shared_lock localLock( m_slaveLock );
-			return *m_slaveData;
-		};
-
-		void Set( const ContextKey& contextKey, _TypeConstRef data )
-		{
-			*m_masterData = data;
-
-			_Sync( contextKey );
-		}
-
-		bool Set( const ContextKey& contextKey, const std::function< bool( _TypeRef ) >& func )
-		{
-			if ( func( *m_masterData ) )
-			{
-				// MasterData가 변경되었을 때만, Lock을 잡고, SlaveData의 변경을 시도한다.
-
-				if ( const bool slaveReplicateResult =
-					[ & ]
-					{
-						std::lock_guard local( m_slaveLock );
-						return func( *m_slaveData );
-					}( ); !slaveReplicateResult )
-				{
-					_Sync( contextKey );
-				}
-
-				return true;
-			}
-			else
-			{
-				return false;
-			}
-		}
-
-#pragma endregion
-
-#pragma region [ Private Func ]
-	private:
-		void _Sync( const ContextKey& )
-		{
-			_TypePtr tempPtr = m_masterData ? new _Type( *m_masterData ) : nullptr;
-			{
-				std::lock_guard local( m_slaveLock );
-				std::swap( m_slaveData, tempPtr );
-			}
-
-			if ( tempPtr )
-				delete tempPtr;
-		}
-
-#pragma endregion
-
-#pragma region [ Member Var ]
-	private:
-		_TypePtr          m_masterData;
-
-		_TypePtr          m_slaveData;
-		std::shared_mutex m_slaveLock;
-
-		std::atomic_flag  m_doOnceFlag;
-#pragma endregion
-
-	};
-
-	void TestReplicationPtr_ContextKey();
+#endif
 
 #pragma endregion
 }
 
-template < class _Type >
-using WsyReplicationPtr = WonSY::Concurrency::ReplicationPtr_ThreadId< _Type >;
+template < class _ContextKey, class _DataType >
+using WsyBroadcastPtr = WonSY::Concurrency::BroadcastPtr< _ContextKey, _DataType >;
 
-template < class _Type >
-using WsyReplicationCKPtr = WonSY::Concurrency::ReplicationPtr_ContextKey< _Type >;
+using BROADCAST_SYNC_TYPE = WonSY::Concurrency::SYNC_TYPE;
+
+//template < class _Type >
+//using WsyReplicationPtr = WonSY::Concurrency::ReplicationPtr_ThreadId< _Type >;

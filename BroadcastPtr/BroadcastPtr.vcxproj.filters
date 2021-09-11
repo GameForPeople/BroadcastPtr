@@ -8,9 +8,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="WonSY_ReplicationPtr.cpp" />
+    <ClCompile Include="WonSY_BroadcastPtr.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="WonSY_ReplicationPtr.h" />
+    <ClInclude Include="WonSY_BroadcastPtr.h" />
   </ItemGroup>
 </Project>

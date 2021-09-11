@@ -4,11 +4,10 @@
 		github.com/GameForPeople
 */
 
-#include "WonSY_ReplicationPtr.h"
+#include "WonSY_BroadcastPtr.h"
 
 #include <map>
 #include <iostream>
-#include <utility>>
 
 namespace WonSY::Concurrency
 {
@@ -133,7 +132,19 @@ namespace WonSY::Concurrency
 
 		// 기본적인 사용법
 		{
-			WsyBroadcastPtr< TestContextKey, std::string > broadCastPtr( []() { return new std::string( "안녕!" ); } );
+			struct TestUnit
+			{
+				int m_value = 0;
+
+				TestUnit()                                 { std::cout << "default ctor" << std::endl;          }
+				~TestUnit()                                { std::cout << "dtor" << std::endl;                  }
+				TestUnit( const TestUnit& )                { std::cout << "Copy ctor" << std::endl;             }
+				TestUnit& operator=( const TestUnit& )     { std::cout << "Copy Op" << std::endl; return *this; }
+				TestUnit( TestUnit&& ) noexcept            { std::cout << "Move ctor" << std::endl;             }
+				TestUnit& operator=( TestUnit&& ) noexcept { std::cout << "Move Op" << std::endl; return *this; }
+			};
+
+			WsyBroadcastPtr< TestContextKey, TestUnit > broadCastPtr( []() { return new TestUnit(); } );
 			
 			// Get
 			{
@@ -143,16 +154,16 @@ namespace WonSY::Concurrency
 
 					// ContextKey를 사용해, Locking없고, 복사없이 Const Reference로 받아옴.
 					// !0. nullptr에 대한 Reference를 반환할 수 있기 때문에, Null Ref일 수 있습니다.
-					const std::string& retString1 = broadCastPtr.Get( testContextKey );
+					const auto& retUnit1 = broadCastPtr.Get( testContextKey );
 
 					// Context 내부더라도, Lock and Copy로 가져올 수 있음. ( RVO 기대 )
-					const std::string retString2 = broadCastPtr.Get();
+					const auto retUnit2 = broadCastPtr.GetCopy();
 				}
 
 				// other Context!
 				{
 					// 다른 Context일 경우에는 Key가 없기 때문에, Lock and Copy만 가능하다.
-					const std::string retString2 = broadCastPtr.Get();
+					const auto retUnit = broadCastPtr.GetCopy();
 				}
 			}
 
@@ -163,27 +174,27 @@ namespace WonSY::Concurrency
 					TestContextKey testContextKey;
 
 					// Master Data에 복사 대입 후에, Slave Data에도 복사 생성한다.
-					broadCastPtr.Set( testContextKey, "Set By Copy!" );
+					broadCastPtr.Set( testContextKey, TestUnit() );
 					
 					// Master 데이터를 참조하여 처리하고자 할 경우에는 아래와 같이 처리합니다.
 					broadCastPtr.Set( testContextKey,
 						[]( auto& data )
 						{
 							// 해당 함수에서 주의할 점은 Master 데이터를 변경하였으면 True를 반환하고, Master 데이터의 변경사항이 없을 경우 false를 리턴하는 것입니다.
-							if ( data.size() > 100 )
+							if ( data.m_value > 3 )
 								return false;
 
-							if ( data.size() == 0 )
+							if ( data.m_value == 0 )
 							{
-								data = "123";
+								data.m_value = 1;
 								return true;
 							}
 
-							data = "ABC";
+							data.m_value = 2;
 							return true;
-						}, BROADCAST_SYNC_TYPE::COPY );
-						// 이 때 3번째 인자로 BROADCAST_SYNC_TYPE를 전달할 수 있습니다. ( Default는 BROADCAST_SYNC_TYPE::DOUBLING )
-						//	두 방식 중, 성능이 더 좋은 방식은 Task의 비용, data의 복사 비용 등 상황에 따라 다릅니다.
+						}, BROADCAST_SYNC_TYPE::DOUBLING );
+						// 이 때 3번째 인자로 BROADCAST_SYNC_TYPE를 전달할 수 있습니다. ( Default는 BROADCAST_SYNC_TYPE::?? 맨날바뀜 )
+						//	두 방식 중, 성능이 더 좋은 방식은 Task의 비용, data의 복사 비용 등 상황에 따라 다를 것으로 예상됩니다.
 						// 0. BROADCAST_SYNC_TYPE::COPY     : Master Data 데이터의 변경 사항이 있을 경우, Slave Data에 복사한다.
 						// 1. BROADCAST_SYNC_TYPE::DOUBLING : Master Data 데이터의 변경 사항이 있을 경우, Slave Data에 동일한 동작을 수행하여 동일하게 합니다.
 				}
@@ -197,8 +208,9 @@ namespace WonSY::Concurrency
 		}
 
 		// 무결성 테스트
-		if ( false )
 		{
+			std::cout << "start! 무결성 테스트 " << std::endl;
+
 			using _DataType = std::map< int, std::string >;
 			WsyBroadcastPtr< TestContextKey, _DataType > broadCastPtr( nullptr );
 			const int loopCount       = 1000;
@@ -213,8 +225,8 @@ namespace WonSY::Concurrency
 						broadCastPtr.Set( testContextKey,
 							[ & ]( _DataType& data )
 							{
-								if ( data.size() > loopCount / 2 )
-									return false;
+								//if ( data.size() > ( loopCount / 2 ) )
+								//	return false;
 
 								return data.insert( { i, std::to_string( i ) } ).second;
 							} );
@@ -234,7 +246,7 @@ namespace WonSY::Concurrency
 						{
 							for ( int i = 0; i < loopCount; ++i )
 							{
-								const auto data     = broadCastPtr.Get();
+								const auto data     = broadCastPtr.GetCopy();
 								const int  sumValue = [ & ]()
 									{
 										int tempValue = 0;
@@ -245,14 +257,14 @@ namespace WonSY::Concurrency
 
 										return tempValue;
 									}();
-
-								std::this_thread::sleep_for( 10ms );
 							}
 						} ) );
 			}
 
 			writeThread.join();
 			for ( auto& th : readThreadCont ) { th.join(); }
+
+			std::cout << "무결성 테스트 끝! " << std::endl;
 		}
 
 		// 성능 테스트
@@ -296,7 +308,7 @@ namespace WonSY::Concurrency
 								{
 									for ( int i = 0; i < loopCount; ++i )
 									{
-										const auto data     = broadCastPtr.Get();
+										const auto data     = broadCastPtr.GetCopy();
 										const int  sumValue = [ & ]()
 											{
 												int tempValue = 0;
@@ -328,7 +340,7 @@ namespace WonSY::Concurrency
 				// map
 				struct TestUnit
 				{
-					bool m_buffer[ 1000 ];
+					std::array< char, 1000 > m_buffer;
 				};
 
 				WsyBroadcastPtr< TestContextKey, std::map< int, TestUnit > > broadCastPtr( nullptr );
@@ -364,13 +376,13 @@ namespace WonSY::Concurrency
 								{
 									for ( int i = 0; i < loopCount; ++i )
 									{
-										const auto data     = broadCastPtr.Get();
+										const auto data     = broadCastPtr.GetCopy();
 										const int  sumValue = [ & ]()
 											{
 												int tempValue = 0;
-												for ( auto ele : data )
+												for ( const auto& ele : data )
 												{
-													tempValue += static_cast< int >( data.size() );
+													tempValue += static_cast< int >( ele.second.m_buffer.size() );
 												}
 
 												return tempValue;
@@ -390,6 +402,8 @@ namespace WonSY::Concurrency
 				broadCastPtr.Set( TestContextKey(), std::map< int, TestUnit >() );
 
 				chekFunc( broadCastPtr, "map - Copy", BROADCAST_SYNC_TYPE::COPY );
+
+				// 아 뭐지 왜 copy가 더 빠르지..
 			}
 		}
 	}

@@ -11,7 +11,7 @@
 #include <functional>
 #include <shared_mutex>
 
-#define NODISCARD [[nodiscard]]
+#define NODISCARD            [[nodiscard]]
 #define DEPRECATED_THREAD_ID true
 
 namespace WonSY::Concurrency
@@ -28,7 +28,8 @@ namespace WonSY::Concurrency
 	// BroadcastPtr Ver 0.3 : threadId를 통한 방식 Deprecated 처리. 오히려 더 프로그래머의 실수를 유발하기 쉬움.
 	// BroadcastPtr Ver 0.4 : 이름변경 SingleReadMultiWritePtr -> Replication -> BroadcastPtr
 	// BroadcastPtr Ver 0.5 : Sub ContextKey를 발급하지 않고, 템플릿으로 이미 생성된 Context Key를 통해 처리하도록 수정
-	
+	// BroadcastPtr Ver 0.6 : SYNC_TYPE에 따라, 복사 혹은 더블링 하도록 처리, Context가 없을 때는 Get이 아닌 Copy를 사용하도록 함수명 수정
+
 	enum class SYNC_TYPE
 	{
 		COPY,      // = Master 데이터를 Slave로 복사
@@ -43,22 +44,24 @@ namespace WonSY::Concurrency
 
 #pragma region [ Public Func ]
 	public:
-		BroadcastPtr( const std::function< _DataType*() >& func /*= nullptr*/ )
+		BroadcastPtr( const std::function< _DataType*() >& initFunc /*= nullptr*/ )
 			: m_masterData( nullptr )
 			, m_slaveData ( nullptr )
 			, m_slaveLock (         )
 		{
-			if ( func )
+			// multi-thread safe?
+			
+			if ( initFunc )
 			{
-				m_masterData = func();
-				m_slaveData  = m_masterData ? new _DataType( *m_masterData ) : nullptr; // multi-thread safe?
+				m_masterData = initFunc();
+				m_slaveData  = m_masterData ? new _DataType( *m_masterData ) : nullptr;
 			}
 
 			// 분명히 성능적으로는 손해이지만, nullptr인 상태에서의 문제가 더 크다고 생각하기 때문에, 이 부분에서 기본 생성자를 호출하여 처리를 한다.
 			if ( !m_masterData )
 			{
 				m_masterData = new _DataType();
-				m_slaveData  = new _DataType();
+				m_slaveData  = new _DataType( *m_masterData );
 			}
 		}
 
@@ -76,7 +79,7 @@ namespace WonSY::Concurrency
 			return *m_masterData;
 		}
 
-		const _DataType Get()
+		const _DataType GetCopy()
 		{
 			std::shared_lock localLock( m_slaveLock );
 			
@@ -93,11 +96,12 @@ namespace WonSY::Concurrency
 		bool Set( 
 			const _ContextKeyType&                                                    contextKey,
 			const std::function< bool/* = 마스터 데이터 변경 여부 */( _DataType& ) >& func,
-			const SYNC_TYPE                                                           syncType = SYNC_TYPE::DOUBLING )
+			const SYNC_TYPE                                                           syncType = SYNC_TYPE::COPY )
 		{
 			if ( func( *m_masterData ) )
 			{
 				// MasterData가 변경되었을 때만, Lock을 잡고, SlaveData의 변경을 시도한다.
+				
 				if ( syncType == SYNC_TYPE::COPY )
 				{
 					_CopyMasterToSlave( contextKey );

@@ -1,4 +1,4 @@
-#include "WonSY_ReplicationPtr.h"
+#include "WonSY_BroadcastPtr.h"
 
 int main()
 {

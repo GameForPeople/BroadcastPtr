@@ -156,7 +156,7 @@ namespace WonSY::Concurrency
 					// !0. nullptr에 대한 Reference를 반환할 수 있기 때문에, Null Ref일 수 있습니다.
 					const auto& retUnit1 = broadCastPtr.Get( testContextKey );
 
-					// Context 내부더라도, Lock and Copy로 가져올 수 있음. ( RVO 기대 )
+					// Context 내부더라도, Lock and Copy로 가져올 수 있음.( RVO 기대 ) 하지만 다른 Context에 넘길 목적이 아니라면 비효율적이다. ( 다른 Context로 넘기더라도 key쓸떄보다 비효율 적 )
 					const auto retUnit2 = broadCastPtr.GetCopy();
 				}
 
@@ -164,6 +164,15 @@ namespace WonSY::Concurrency
 				{
 					// 다른 Context일 경우에는 Key가 없기 때문에, Lock and Copy만 가능하다.
 					const auto retUnit = broadCastPtr.GetCopy();
+				
+					// 데이터를 복사하지 않고, 정말로 간단한 일만 할거라면, ReadOnly객체로 처리한다.
+					int sumValue = 0;
+					broadCastPtr.RunReadOnlyTask( 
+						// read lock
+						[ &sumValue ]( const auto& data )
+						{
+							sumValue += data.m_value;
+						} );
 				}
 			}
 

@@ -29,6 +29,7 @@ namespace WonSY::Concurrency
 	// BroadcastPtr Ver 0.4 : 이름변경 SingleReadMultiWritePtr -> Replication -> BroadcastPtr
 	// BroadcastPtr Ver 0.5 : Sub ContextKey를 발급하지 않고, 템플릿으로 이미 생성된 Context Key를 통해 처리하도록 수정
 	// BroadcastPtr Ver 0.6 : SYNC_TYPE에 따라, 복사 혹은 더블링 하도록 처리, Context가 없을 때는 Get이 아닌 Copy를 사용하도록 함수명 수정
+	// BroadcastPtr Ver 0.7 : Context Key를 지니지 못했더라도, Const Data Ref를 인자로 받는 Read Only Task를 통해, 복사 없이 처리할 수 있는 방안 추가
 
 	enum class SYNC_TYPE
 	{
@@ -86,6 +87,12 @@ namespace WonSY::Concurrency
 			// copy!!
 			return m_slaveData ? *m_slaveData : _DataType();
 		};
+
+		const void RunReadOnlyTask( const std::function< void( const _DataType& ) >& func )
+		{
+			std::shared_lock localLock( m_slaveLock );
+			func( *m_slaveData );
+		}
 
 		void Set( const _ContextKeyType& contextKey, const _DataType& data )
 		{
